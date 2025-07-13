@@ -1,0 +1,1115 @@
+'use client';
+
+import { useState, useMemo, useEffect, useCallback } from 'react';
+import Link from 'next/link';
+import AppLayout from '../../components/layout/AppLayout';
+import { ProjectWithTeamMembers } from '../../lib/database';
+
+// View modes for the projects page
+type ViewMode = 'grid' | 'table' | 'list';
+type ViewDensity = 'compact' | 'comfortable' | 'spacious';
+type GroupBy = 'none' | 'status' | 'priority' | 'methodology' | 'dueDate' | 'team';
+
+// Status color mapping
+const STATUS_COLORS = {
+  active: 'bg-green-100 text-green-800 border-green-200',
+  completed: 'bg-blue-100 text-blue-800 border-blue-200',
+  'on-hold': 'bg-yellow-100 text-yellow-800 border-yellow-200',
+  blocked: 'bg-red-100 text-red-800 border-red-200'
+};
+
+const PRIORITY_COLORS = {
+  high: 'bg-red-500',
+  medium: 'bg-yellow-500',
+  low: 'bg-green-500'
+};
+
+const METHODOLOGY_COLORS = {
+  agile: 'bg-blue-100 text-blue-800',
+  waterfall: 'bg-purple-100 text-purple-800',
+  hybrid: 'bg-orange-100 text-orange-800'
+};
+
+// Get group icon based on group type and name
+const getGroupIcon = (groupType: GroupBy, groupName: string) => {
+  switch (groupType) {
+    case 'status':
+      if (groupName.includes('ACTIVE')) return '🟢';
+      if (groupName.includes('COMPLETED')) return '✅';
+      if (groupName.includes('ON HOLD')) return '⏸️';
+      if (groupName.includes('BLOCKED')) return '🔴';
+      return '📊';
+    case 'priority':
+      if (groupName.includes('HIGH')) return '🔴';
+      if (groupName.includes('MEDIUM')) return '🟡';
+      if (groupName.includes('LOW')) return '🟢';
+      return '📋';
+    case 'methodology':
+      if (groupName === 'Agile') return '⚡';
+      if (groupName === 'Waterfall') return '🌊';
+      if (groupName === 'Hybrid') return '🔄';
+      return '📋';
+    case 'dueDate':
+      if (groupName === 'Overdue') return '🚨';
+      if (groupName === 'Due This Week') return '⏰';
+      if (groupName === 'Due This Month') return '📅';
+      if (groupName === 'Due Later') return '🗓️';
+      return '📅';
+    case 'team':
+      if (groupName.includes('No Team')) return '👤';
+      return '👥';
+    default:
+      return '📂';
+  }
+};
+
+export default function ProjectsPage() {
+  // View state
+  const [viewMode, setViewMode] = useState<ViewMode>('grid');
+  const [groupBy, setGroupBy] = useState<GroupBy>('none');
+  
+  // Filter and search state
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedFilters, setSelectedFilters] = useState({
+    methodology: [] as string[],
+    status: [] as string[],
+    priority: [] as string[],
+    teamMember: [] as string[]
+  });
+  
+  // Data state
+  const [projects, setProjects] = useState<ProjectWithTeamMembers[]>([]);
+  const [stats, setStats] = useState<{
+    total: number;
+    active: number;
+    completed: number;
+    blocked: number;
+    onHold: number;
+    agileProjects: number;
+    waterfallProjects: number;
+    hybridProjects: number;
+    totalBudget: number;
+    avgProgress: number;
+  }>({
+    total: 0,
+    active: 0,
+    completed: 0,
+    blocked: 0,
+    onHold: 0,
+    agileProjects: 0,
+    waterfallProjects: 0,
+    hybridProjects: 0,
+    totalBudget: 0,
+    avgProgress: 0,
+  });
+  const [loading, setLoading] = useState(true);
+  
+  // UI state
+  const [selectedProjects, setSelectedProjects] = useState<Set<string>>(new Set());
+  const [showBulkActions, setShowBulkActions] = useState(false);
+
+  // Load data
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        setLoading(true);
+        
+        const [projectsResponse, statsResponse] = await Promise.all([
+          fetch('/api/projects'),
+          fetch('/api/analytics')
+        ]);
+        
+        const [projectsData, statsData] = await Promise.all([
+          projectsResponse.json(),
+          statsResponse.json()
+        ]);
+        
+        setProjects(projectsData);
+        setStats(statsData);
+        setLoading(false);
+      } catch (error) {
+        console.error('Error loading data:', error);
+        setLoading(false);
+      }
+    };
+
+    loadData();
+  }, []);
+
+  // Filter projects based on search and filters
+  const filteredProjects = useMemo(() => {
+    let filtered = projects;
+
+    // Search filter
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      filtered = filtered.filter(project =>
+        project.name.toLowerCase().includes(query) ||
+        project.description.toLowerCase().includes(query) ||
+        project.creator.name.toLowerCase().includes(query) ||
+        project.tags.some(tag => tag.tag.toLowerCase().includes(query))
+      );
+    }
+
+    // Methodology filter
+    if (selectedFilters.methodology.length > 0) {
+      filtered = filtered.filter(project =>
+        selectedFilters.methodology.includes(project.methodology)
+      );
+    }
+
+    // Status filter
+    if (selectedFilters.status.length > 0) {
+      filtered = filtered.filter(project =>
+        selectedFilters.status.includes(project.status)
+      );
+    }
+
+    // Priority filter
+    if (selectedFilters.priority.length > 0) {
+      filtered = filtered.filter(project =>
+        selectedFilters.priority.includes(project.priority)
+      );
+    }
+
+    return filtered;
+  }, [projects, searchQuery, selectedFilters]);
+
+  // Group projects
+  const groupedProjects = useMemo(() => {
+    if (groupBy === 'none') {
+      return { 'All Projects': filteredProjects };
+    }
+
+    const groups: { [key: string]: ProjectWithTeamMembers[] } = {};
+
+    filteredProjects.forEach(project => {
+      let groupKey = 'Other';
+      
+      switch (groupBy) {
+        case 'status':
+          groupKey = project.status.replace('-', ' ').toUpperCase();
+          break;
+        case 'priority':
+          groupKey = `${project.priority.toUpperCase()} Priority`;
+          break;
+        case 'methodology':
+          groupKey = project.methodology.charAt(0).toUpperCase() + project.methodology.slice(1);
+          break;
+        case 'dueDate':
+          const dueDate = new Date(project.dueDate);
+          const today = new Date();
+          const diffTime = dueDate.getTime() - today.getTime();
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+          
+          if (diffDays < 0) {
+            groupKey = 'Overdue';
+          } else if (diffDays <= 7) {
+            groupKey = 'Due This Week';
+          } else if (diffDays <= 30) {
+            groupKey = 'Due This Month';
+          } else {
+            groupKey = 'Due Later';
+          }
+          break;
+        case 'team':
+          groupKey = project.teamMembers.length > 0 
+            ? `Team of ${project.teamMembers.length}` 
+            : 'No Team Assigned';
+          break;
+      }
+
+      if (!groups[groupKey]) {
+        groups[groupKey] = [];
+      }
+      groups[groupKey].push(project);
+    });
+
+    // Sort groups by priority/importance
+    const sortedGroups: { [key: string]: ProjectWithTeamMembers[] } = {};
+    const groupOrder = getGroupOrder(groupBy);
+    
+    groupOrder.forEach(key => {
+      if (groups[key]) {
+        sortedGroups[key] = groups[key];
+      }
+    });
+
+    // Add any remaining groups
+    Object.keys(groups).forEach(key => {
+      if (!sortedGroups[key]) {
+        sortedGroups[key] = groups[key];
+      }
+    });
+
+    return sortedGroups;
+  }, [filteredProjects, groupBy]);
+
+  // Helper function to get group order for sorting
+  const getGroupOrder = (groupType: GroupBy): string[] => {
+    switch (groupType) {
+      case 'status':
+        return ['ACTIVE', 'ON HOLD', 'BLOCKED', 'COMPLETED'];
+      case 'priority':
+        return ['HIGH Priority', 'MEDIUM Priority', 'LOW Priority'];
+      case 'methodology':
+        return ['Agile', 'Waterfall', 'Hybrid'];
+      case 'dueDate':
+        return ['Overdue', 'Due This Week', 'Due This Month', 'Due Later'];
+      case 'team':
+        return ['Team of 1', 'Team of 2', 'Team of 3', 'Team of 4', 'Team of 5+', 'No Team Assigned'];
+      default:
+        return [];
+    }
+  };
+
+  // Handle filter changes
+  const handleFilterChange = useCallback((type: keyof typeof selectedFilters, value: string) => {
+    setSelectedFilters(prev => ({
+      ...prev,
+      [type]: prev[type].includes(value)
+        ? prev[type].filter(item => item !== value)
+        : [...prev[type], value]
+    }));
+  }, []);
+
+  // Clear filters
+  const clearFilters = useCallback(() => {
+    setSelectedFilters({
+      methodology: [],
+      status: [],
+      priority: [],
+      teamMember: []
+    });
+    setSearchQuery('');
+  }, []);
+
+  // Calculate progress ring styles
+  const getProgressRingStyle = (progress: number) => {
+    const circumference = 2 * Math.PI * 18; // radius = 18
+    const strokeDasharray = circumference;
+    const strokeDashoffset = circumference - (progress / 100) * circumference;
+    return { strokeDasharray, strokeDashoffset };
+  };
+
+  // Project selection handlers
+  const handleProjectSelect = useCallback((projectId: string) => {
+    setSelectedProjects(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(projectId)) {
+        newSet.delete(projectId);
+      } else {
+        newSet.add(projectId);
+      }
+      setShowBulkActions(newSet.size > 0);
+      return newSet;
+    });
+  }, []);
+
+  const handleSelectAll = useCallback(() => {
+    if (selectedProjects.size === filteredProjects.length) {
+      setSelectedProjects(new Set());
+      setShowBulkActions(false);
+    } else {
+      setSelectedProjects(new Set(filteredProjects.map(p => p.id)));
+      setShowBulkActions(true);
+    }
+  }, [selectedProjects.size, filteredProjects]);
+
+  if (loading) {
+    return (
+      <AppLayout title="Projects" subtitle="Loading your projects...">
+        <div className="min-h-screen bg-gray-50">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            <div className="flex items-center justify-center min-h-[400px]">
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                <p className="text-gray-600">Loading projects...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </AppLayout>
+    );
+  }
+
+  return (
+    <AppLayout title="Projects" subtitle="Manage and track your projects">
+      <div className="min-h-screen bg-gray-50">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          {/* Header Section */}
+          <div className="py-8">
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-6">
+              <div>
+                <h1 className="text-3xl font-bold text-gray-900">Projects</h1>
+                <p className="mt-2 text-gray-600">
+                  Manage and track your {stats.total} projects across {stats.agileProjects + stats.waterfallProjects + stats.hybridProjects} methodologies
+                </p>
+              </div>
+              
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  className="inline-flex items-center px-4 py-2 border border-gray-300 shadow-sm text-sm font-medium rounded-lg text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  Import
+                </button>
+                <button
+                  type="button"
+                  className="inline-flex items-center px-4 py-2 border border-transparent text-sm font-medium rounded-lg shadow-sm text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 transition-colors"
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  New Project
+                </button>
+              </div>
+            </div>
+
+            {/* Stats Cards */}
+            <div className="mt-6 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white overflow-hidden shadow-sm rounded-lg border border-gray-200">
+                <div className="p-5">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0">
+                      <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
+                        <svg className="w-5 h-5 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt className="text-sm font-medium text-gray-500 truncate">Total Projects</dt>
+                        <dd className="text-2xl font-semibold text-gray-900">{stats.total}</dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white overflow-hidden shadow-sm rounded-lg border border-gray-200">
+                <div className="p-5">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0">
+                      <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
+                        <svg className="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt className="text-sm font-medium text-gray-500 truncate">Active</dt>
+                        <dd className="text-2xl font-semibold text-gray-900">{stats.active}</dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white overflow-hidden shadow-sm rounded-lg border border-gray-200">
+                <div className="p-5">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0">
+                      <div className="w-8 h-8 bg-purple-100 rounded-lg flex items-center justify-center">
+                        <svg className="w-5 h-5 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt className="text-sm font-medium text-gray-500 truncate">Average Progress</dt>
+                        <dd className="text-2xl font-semibold text-gray-900">{stats.avgProgress}%</dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="bg-white overflow-hidden shadow-sm rounded-lg border border-gray-200">
+                <div className="p-5">
+                  <div className="flex items-center">
+                    <div className="flex-shrink-0">
+                      <div className="w-8 h-8 bg-emerald-100 rounded-lg flex items-center justify-center">
+                        <svg className="w-5 h-5 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1" />
+                        </svg>
+                      </div>
+                    </div>
+                    <div className="ml-5 w-0 flex-1">
+                      <dl>
+                        <dt className="text-sm font-medium text-gray-500 truncate">Total Budget</dt>
+                        <dd className="text-2xl font-semibold text-gray-900">${(stats.totalBudget / 1000000).toFixed(1)}M</dd>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Search and Filters Section */}
+          <div className="bg-white shadow-sm rounded-lg border border-gray-200 mb-6">
+            <div className="p-6">
+              {/* Search Bar */}
+              <div className="flex flex-col lg:flex-row gap-4 mb-6">
+                <div className="flex-1">
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                      </svg>
+                    </div>
+                    <input
+                      type="text"
+                      placeholder="Search projects, teams, or tags..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="block w-full pl-10 pr-3 py-3 border border-gray-300 rounded-lg leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                    />
+                  </div>
+                </div>
+                
+                {/* View Controls */}
+                <div className="flex items-center gap-3">
+                  {/* View Mode Selector */}
+                  <div className="flex bg-gray-100 rounded-lg p-1">
+                    <button
+                      onClick={() => setViewMode('grid')}
+                      className={`p-2 rounded-md transition-colors ${
+                        viewMode === 'grid'
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                      title="Grid View"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path d="M5 3a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2V5a2 2 0 00-2-2H5zM5 11a2 2 0 00-2 2v2a2 2 0 002 2h2a2 2 0 002-2v-2a2 2 0 00-2-2H5zM11 5a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V5zM11 13a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => setViewMode('table')}
+                      className={`p-2 rounded-md transition-colors ${
+                        viewMode === 'table'
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                      title="Table View"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V8zm0 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1v-2z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                    <button
+                      onClick={() => setViewMode('list')}
+                      className={`p-2 rounded-md transition-colors ${
+                        viewMode === 'list'
+                          ? 'bg-white text-gray-900 shadow-sm'
+                          : 'text-gray-500 hover:text-gray-700'
+                      }`}
+                      title="List View"
+                    >
+                      <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M3 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V4zm0 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1V8zm0 4a1 1 0 011-1h12a1 1 0 011 1v2a1 1 0 01-1 1H4a1 1 0 01-1-1v-2z" clipRule="evenodd" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {/* Group By Selector */}
+                  <div className="flex items-center space-x-2">
+                    <label className="text-sm font-medium text-gray-700">Group by:</label>
+                    <select
+                      value={groupBy}
+                      onChange={(e) => setGroupBy(e.target.value as GroupBy)}
+                      className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                    >
+                      <option value="none">None</option>
+                      <option value="status">Status</option>
+                      <option value="priority">Priority</option>
+                      <option value="methodology">Methodology</option>
+                      <option value="dueDate">Due Date</option>
+                      <option value="team">Team Size</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              {/* Filter Pills */}
+              <div className="flex flex-wrap gap-2 mb-4">
+                {/* Methodology Filters */}
+                {['agile', 'waterfall', 'hybrid'].map((methodology) => (
+                  <button
+                    key={methodology}
+                    onClick={() => handleFilterChange('methodology', methodology)}
+                    className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                      selectedFilters.methodology.includes(methodology)
+                        ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                        : 'bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200'
+                    }`}
+                  >
+                    {methodology.charAt(0).toUpperCase() + methodology.slice(1)}
+                    {selectedFilters.methodology.includes(methodology) && (
+                      <svg className="ml-1 w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </button>
+                ))}
+
+                {/* Status Filters */}
+                {['active', 'completed', 'on-hold', 'blocked'].map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => handleFilterChange('status', status)}
+                    className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                      selectedFilters.status.includes(status)
+                        ? STATUS_COLORS[status as keyof typeof STATUS_COLORS]
+                        : 'bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200'
+                    }`}
+                  >
+                    {status.charAt(0).toUpperCase() + status.slice(1).replace('-', ' ')}
+                    {selectedFilters.status.includes(status) && (
+                      <svg className="ml-1 w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </button>
+                ))}
+
+                {/* Priority Filters */}
+                {['high', 'medium', 'low'].map((priority) => (
+                  <button
+                    key={priority}
+                    onClick={() => handleFilterChange('priority', priority)}
+                    className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                      selectedFilters.priority.includes(priority)
+                        ? 'bg-gray-800 text-white border border-gray-800'
+                        : 'bg-gray-100 text-gray-700 border border-gray-200 hover:bg-gray-200'
+                    }`}
+                  >
+                    <div className={`w-2 h-2 rounded-full mr-2 ${PRIORITY_COLORS[priority as keyof typeof PRIORITY_COLORS]}`}></div>
+                    {priority.charAt(0).toUpperCase() + priority.slice(1)} Priority
+                    {selectedFilters.priority.includes(priority) && (
+                      <svg className="ml-1 w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                        <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                      </svg>
+                    )}
+                  </button>
+                ))}
+
+                {/* Clear Filters */}
+                {(searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) && (
+                  <button
+                    onClick={clearFilters}
+                    className="inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium text-red-700 bg-red-50 border border-red-200 hover:bg-red-100 transition-colors"
+                  >
+                    Clear all
+                    <svg className="ml-1 w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                    </svg>
+                  </button>
+                )}
+              </div>
+
+              {/* Results Summary */}
+              <div className="flex items-center justify-between text-sm text-gray-600">
+                <span>
+                  Showing {Object.values(groupedProjects).reduce((sum, group) => sum + group.length, 0)} of {projects.length} projects
+                </span>
+                {filteredProjects.length > 0 && (
+                  <div className="flex items-center gap-4">
+                    <label className="flex items-center">
+                      <input
+                        type="checkbox"
+                        checked={selectedProjects.size === filteredProjects.length}
+                        onChange={handleSelectAll}
+                        className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                      />
+                      <span className="ml-2">Select all</span>
+                    </label>
+                    {selectedProjects.size > 0 && (
+                      <span className="text-blue-600">
+                        {selectedProjects.size} selected
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* Bulk Actions Bar */}
+          {showBulkActions && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center">
+                  <span className="text-sm font-medium text-blue-900">
+                    {selectedProjects.size} project{selectedProjects.size !== 1 ? 's' : ''} selected
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button className="text-sm bg-white border border-blue-200 text-blue-700 px-3 py-1.5 rounded-md hover:bg-blue-50 transition-colors">
+                    Export
+                  </button>
+                  <button className="text-sm bg-white border border-blue-200 text-blue-700 px-3 py-1.5 rounded-md hover:bg-blue-50 transition-colors">
+                    Archive
+                  </button>
+                  <button className="text-sm bg-blue-600 text-white px-3 py-1.5 rounded-md hover:bg-blue-700 transition-colors">
+                    Update Status
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Projects Grid */}
+          {viewMode === 'grid' && (
+            <div className="pb-12">
+              {Object.entries(groupedProjects).map(([groupName, groupProjects]) => (
+                <div key={groupName} className="mb-8">
+                  {/* Group Header */}
+                  {groupBy !== 'none' && (
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                        {getGroupIcon(groupBy, groupName)}
+                        {groupName}
+                        <span className="text-sm font-normal text-gray-500">
+                          ({groupProjects.length} project{groupProjects.length !== 1 ? 's' : ''})
+                        </span>
+                      </h3>
+                      <div className="h-px bg-gray-200 flex-1 ml-4"></div>
+                    </div>
+                  )}
+                  
+                  {/* Group Projects */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+                    {groupProjects.map((project) => (
+                <div
+                  key={project.id}
+                  className="bg-white rounded-xl shadow-sm border border-gray-200 hover:shadow-md transition-all duration-200 hover:border-gray-300 group"
+                >
+                  {/* Project Card Header */}
+                  <div className="p-6">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={selectedProjects.has(project.id)}
+                          onChange={() => handleProjectSelect(project.id)}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        <div className="flex-1">
+                          <Link
+                            href={`/projects/${project.id}`}
+                            className="font-semibold text-gray-900 hover:text-blue-600 transition-colors line-clamp-2"
+                          >
+                            {project.name}
+                          </Link>
+                          <p className="text-sm text-gray-600 mt-1 line-clamp-2">
+                            {project.description}
+                          </p>
+                        </div>
+                      </div>
+                      
+                      {/* Priority Indicator */}
+                      <div className={`w-3 h-3 rounded-full ${PRIORITY_COLORS[project.priority]}`} title={`${project.priority} priority`}></div>
+                    </div>
+
+                    {/* Project Meta */}
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-2">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[project.status]}`}>
+                          {project.status}
+                        </span>
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${METHODOLOGY_COLORS[project.methodology]}`}>
+                          {project.methodology}
+                        </span>
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        Due {new Date(project.dueDate).toLocaleDateString()}
+                      </span>
+                    </div>
+
+                    {/* Progress Ring */}
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex items-center gap-3">
+                        <div className="relative w-12 h-12">
+                          <svg className="w-12 h-12 transform -rotate-90" viewBox="0 0 40 40">
+                            <circle
+                              cx="20"
+                              cy="20"
+                              r="18"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              fill="none"
+                              className="text-gray-200"
+                            />
+                            <circle
+                              cx="20"
+                              cy="20"
+                              r="18"
+                              stroke="currentColor"
+                              strokeWidth="3"
+                              fill="none"
+                              className={project.progress >= 80 ? 'text-green-500' : project.progress >= 40 ? 'text-yellow-500' : 'text-blue-500'}
+                              style={getProgressRingStyle(project.progress)}
+                              strokeLinecap="round"
+                            />
+                          </svg>
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <span className="text-xs font-semibold text-gray-900">
+                              {project.progress}%
+                            </span>
+                          </div>
+                        </div>
+                        <div>
+                          <div className="text-sm font-medium text-gray-900">Progress</div>
+                          <div className="text-xs text-gray-500">
+                            {project.status === 'completed' ? 'Completed' : 
+                             project.status === 'blocked' ? 'Blocked' :
+                             'In Progress'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-sm font-medium text-gray-900">
+                          ${(project.budget / 1000).toFixed(0)}K
+                        </div>
+                        <div className="text-xs text-gray-500">Budget</div>
+                      </div>
+                    </div>
+
+                    {/* Team Members */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-gray-500">Team:</span>
+                        <div className="flex -space-x-1">
+                          {project.teamMembers.slice(0, 3).map((teamMember) => (
+                            <div
+                              key={teamMember.user.id}
+                              className="w-6 h-6 bg-gradient-to-r from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold border border-white"
+                              title={teamMember.user.name}
+                            >
+                              {teamMember.user.avatar}
+                            </div>
+                          ))}
+                          {project.teamMembers.length > 3 && (
+                            <div className="w-6 h-6 bg-gray-300 rounded-full flex items-center justify-center text-gray-600 text-xs font-bold border border-white">
+                              +{project.teamMembers.length - 3}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* Project Tags */}
+                      <div className="flex gap-1">
+                        {project.tags.slice(0, 2).map((tagObj, index) => (
+                          <span key={index} className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                            {tagObj.tag}
+                          </span>
+                        ))}
+                        {project.tags.length > 2 && (
+                          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                            +{project.tags.length - 2}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Card Footer */}
+                  <div className="px-6 py-3 bg-gray-50 border-t border-gray-100 rounded-b-xl">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-gray-500">
+                        Updated {new Date(project.lastUpdated).toLocaleDateString()}
+                      </span>
+                      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <Link
+                          href={`/projects/${project.id}`}
+                          className="text-xs text-blue-600 hover:text-blue-800 font-medium"
+                        >
+                          View →
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Table View */}
+          {viewMode === 'table' && (
+            <div className="bg-white shadow-sm rounded-lg border border-gray-200 overflow-hidden">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th scope="col" className="relative w-12 px-6 sm:w-16 sm:px-8">
+                      <input
+                        type="checkbox"
+                        checked={selectedProjects.size === filteredProjects.length}
+                        onChange={handleSelectAll}
+                        className="absolute left-4 top-1/2 -mt-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 sm:left-6"
+                      />
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Project
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Progress
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Team
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Budget
+                    </th>
+                    <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      Due Date
+                    </th>
+                    <th scope="col" className="relative px-6 py-3">
+                      <span className="sr-only">Actions</span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {filteredProjects.map((project) => (
+                    <tr key={project.id} className="hover:bg-gray-50">
+                      <td className="relative w-12 px-6 sm:w-16 sm:px-8">
+                        <input
+                          type="checkbox"
+                          checked={selectedProjects.has(project.id)}
+                          onChange={() => handleProjectSelect(project.id)}
+                          className="absolute left-4 top-1/2 -mt-2 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 sm:left-6"
+                        />
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className={`w-3 h-3 rounded-full mr-3 ${PRIORITY_COLORS[project.priority]}`}></div>
+                          <div>
+                            <div className="text-sm font-medium text-gray-900">
+                              <Link href={`/projects/${project.id}`} className="hover:text-blue-600">
+                                {project.name}
+                              </Link>
+                            </div>
+                            <div className="text-sm text-gray-500 truncate max-w-xs">
+                              {project.description}
+                            </div>
+                            <div className="flex items-center mt-1 gap-1">
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${METHODOLOGY_COLORS[project.methodology]}`}>
+                                {project.methodology}
+                              </span>
+                              {project.tags.slice(0, 1).map((tagObj, index) => (
+                                <span key={index} className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600">
+                                  {tagObj.tag}
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[project.status]}`}>
+                          {project.status}
+                        </span>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex items-center">
+                          <div className="w-full bg-gray-200 rounded-full h-2 mr-3" style={{ width: '60px' }}>
+                            <div
+                              className={`h-2 rounded-full ${
+                                project.progress >= 80 ? 'bg-green-500' : 
+                                project.progress >= 40 ? 'bg-yellow-500' : 'bg-blue-500'
+                              }`}
+                              style={{ width: `${project.progress}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm text-gray-900 font-medium">{project.progress}%</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap">
+                        <div className="flex -space-x-1">
+                          {project.teamMembers.slice(0, 3).map((teamMember) => (
+                            <div
+                              key={teamMember.user.id}
+                              className="w-6 h-6 bg-gradient-to-r from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold border border-white"
+                              title={teamMember.user.name}
+                            >
+                              {teamMember.user.avatar}
+                            </div>
+                          ))}
+                          {project.teamMembers.length > 3 && (
+                            <div className="w-6 h-6 bg-gray-300 rounded-full flex items-center justify-center text-gray-600 text-xs font-bold border border-white">
+                              +{project.teamMembers.length - 3}
+                            </div>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-medium">
+                        ${(project.budget / 1000).toFixed(0)}K
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                        {new Date(project.dueDate).toLocaleDateString()}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                        <Link href={`/projects/${project.id}`} className="text-blue-600 hover:text-blue-900">
+                          View
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* List View */}
+          {viewMode === 'list' && (
+            <div className="space-y-3 pb-12">
+              {filteredProjects.map((project) => (
+                <div
+                  key={project.id}
+                  className="bg-white border border-gray-200 rounded-lg shadow-sm hover:shadow-md transition-all duration-200 hover:border-gray-300"
+                >
+                  <div className="px-6 py-4">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center space-x-4 flex-1">
+                        <input
+                          type="checkbox"
+                          checked={selectedProjects.has(project.id)}
+                          onChange={() => handleProjectSelect(project.id)}
+                          className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+                        />
+                        
+                        <div className={`w-3 h-3 rounded-full ${PRIORITY_COLORS[project.priority]}`} title={`${project.priority} priority`}></div>
+                        
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center space-x-2 mb-1">
+                            <Link
+                              href={`/projects/${project.id}`}
+                              className="text-lg font-semibold text-gray-900 hover:text-blue-600 transition-colors truncate"
+                            >
+                              {project.name}
+                            </Link>
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STATUS_COLORS[project.status]}`}>
+                              {project.status}
+                            </span>
+                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${METHODOLOGY_COLORS[project.methodology]}`}>
+                              {project.methodology}
+                            </span>
+                          </div>
+                          <p className="text-sm text-gray-600 line-clamp-1 mb-2">
+                            {project.description}
+                          </p>
+                          <div className="flex items-center space-x-4 text-sm text-gray-500">
+                            <span>Due {new Date(project.dueDate).toLocaleDateString()}</span>
+                            <span>•</span>
+                            <span>${(project.budget / 1000).toFixed(0)}K budget</span>
+                            <span>•</span>
+                            <span>{project.teamMembers.length} team members</span>
+                            <span>•</span>
+                            <span>Updated {new Date(project.lastUpdated).toLocaleDateString()}</span>
+                          </div>
+                        </div>
+                      </div>
+                      
+                      <div className="flex items-center space-x-4">
+                        {/* Progress */}
+                        <div className="flex items-center space-x-2">
+                          <div className="w-16 bg-gray-200 rounded-full h-2">
+                            <div
+                              className={`h-2 rounded-full ${
+                                project.progress >= 80 ? 'bg-green-500' : 
+                                project.progress >= 40 ? 'bg-yellow-500' : 'bg-blue-500'
+                              }`}
+                              style={{ width: `${project.progress}%` }}
+                            ></div>
+                          </div>
+                          <span className="text-sm font-medium text-gray-900 w-10 text-right">
+                            {project.progress}%
+                          </span>
+                        </div>
+                        
+                        {/* Team Members */}
+                        <div className="flex -space-x-1">
+                          {project.teamMembers.slice(0, 3).map((teamMember) => (
+                            <div
+                              key={teamMember.user.id}
+                              className="w-7 h-7 bg-gradient-to-r from-blue-400 to-purple-500 rounded-full flex items-center justify-center text-white text-xs font-bold border-2 border-white"
+                              title={teamMember.user.name}
+                            >
+                              {teamMember.user.avatar}
+                            </div>
+                          ))}
+                          {project.teamMembers.length > 3 && (
+                            <div className="w-7 h-7 bg-gray-300 rounded-full flex items-center justify-center text-gray-600 text-xs font-bold border-2 border-white">
+                              +{project.teamMembers.length - 3}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Tags */}
+                        <div className="flex gap-1">
+                          {project.tags.slice(0, 2).map((tagObj, index) => (
+                            <span key={index} className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-gray-100 text-gray-700">
+                              {tagObj.tag}
+                            </span>
+                          ))}
+                        </div>
+                        
+                        <Link
+                          href={`/projects/${project.id}`}
+                          className="text-blue-600 hover:text-blue-800 text-sm font-medium"
+                        >
+                          View →
+                        </Link>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Empty State */}
+          {filteredProjects.length === 0 && (
+            <div className="text-center py-12">
+              <svg className="mx-auto h-12 w-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <h3 className="mt-2 text-sm font-medium text-gray-900">No projects found</h3>
+              <p className="mt-1 text-sm text-gray-500">
+                {searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)
+                  ? 'Try adjusting your search or filters'
+                  : 'Get started by creating a new project'}
+              </p>
+              {!(searchQuery || Object.values(selectedFilters).some(arr => arr.length > 0)) && (
+                <div className="mt-6">
+                  <button
+                    type="button"
+                    className="inline-flex items-center px-4 py-2 border border-transparent shadow-sm text-sm font-medium rounded-md text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                  >
+                    <svg className="-ml-1 mr-2 h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    New Project
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </AppLayout>
+  );
+}
