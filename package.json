@@ -7,9 +7,18 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
+    "lint:fix": "next lint --fix",
+    "type-check": "npx tsc --noEmit",
     "health-check": "node scripts/health-check.js",
-    "quality-gate": "npm run health-check && npm run lint && npm run build",
-    "pre-deploy": "npm run quality-gate"
+    "quality-gate": "npm run health-check && npm run lint && npm run type-check && npm run build",
+    "pre-deploy": "npm run quality-gate",
+    "db:generate": "npx prisma generate",
+    "db:push": "npx prisma db push",
+    "db:seed": "npx prisma db seed",
+    "db:reset": "npx prisma migrate reset --force && npm run db:seed",
+    "db:studio": "npx prisma studio",
+    "vercel-build": "npm run db:generate && npm run build",
+    "postinstall": "npm run db:generate"
   },
   "dependencies": {
     "@hello-pangea/dnd": "^18.0.1",

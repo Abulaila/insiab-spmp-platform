@@ -43,14 +43,38 @@ enum TaskStatus {
   CANCELLED
 }
 
+enum TimesheetStatus {
+  DRAFT
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum SkillLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+  EXPERT
+}
+
 model User {
   id               String               @id @default(cuid())
   name             String
   email            String               @unique
   avatar           String?
   role             String
+  jobTitle         String?
+  departmentId     String?
+  managerId        String?
+  hourlyRate       Float?
+  weeklyCapacity   Float?               @default(40)
+  isActive         Boolean              @default(true)
+  startDate        DateTime?
+  endDate          DateTime?
   createdAt        DateTime             @default(now())
   updatedAt        DateTime             @updatedAt
+  
+  // Existing relations
   createdBoards    KanbanBoard[]        @relation("BoardCreator")
   createdTemplates KanbanCardTemplate[] @relation("TemplateCreator")
   createdCards     KanbanCard[]         @relation("CardCreator")
@@ -68,6 +92,16 @@ model User {
   userKanbanBoards UserKanbanBoard[]    @relation("UserKanbanBoardOwner")
   createdUserKanbanCards UserKanbanCard[] @relation("UserKanbanCardCreator")
   assignedUserKanbanCards UserKanbanCard[] @relation("UserKanbanCardAssignee")
+  
+  // New relations for timesheet and resource management
+  timeEntries      TimeEntry[]          @relation("TimeEntryUser")
+  timesheets       Timesheet[]          @relation("TimesheetUser")
+  approvedTimesheets Timesheet[]        @relation("TimesheetApprover")
+  skills           UserSkill[]          @relation("UserSkills")
+  department       Department?          @relation("DepartmentMembers", fields: [departmentId], references: [id])
+  manager          User?                @relation("ManagerDirectReports", fields: [managerId], references: [id])
+  directReports    User[]               @relation("ManagerDirectReports")
+  managedDepartments Department[]       @relation("DepartmentManager")
 
   @@map("users")
 }
@@ -92,6 +126,8 @@ model Project {
   tags        ProjectTag[]
   teamMembers ProjectTeamMember[]
   tasks       Task[]
+  timeEntries TimeEntry[]         @relation("ProjectTimeEntries")
+  skills      ProjectSkill[]      @relation("ProjectSkills")
   creator     User                @relation("ProjectCreator", fields: [createdBy], references: [id])
   portfolio   Portfolio?          @relation(fields: [portfolioId], references: [id])
 
@@ -306,6 +342,7 @@ model Task {
   subtasks        Task[]            @relation("ParentTask")
   parentTask      Task?             @relation("ParentTask", fields: [parentTaskId], references: [id])
   parentTaskId    String?
+  timeEntries     TimeEntry[]       @relation("TaskTimeEntries")
 
   @@map("tasks")
 }
@@ -415,4 +452,126 @@ model UserKanbanCard {
   column      UserKanbanColumn @relation(fields: [columnId], references: [id], onDelete: Cascade)
 
   @@map("user_kanban_cards")
+}
+
+// TIMESHEET MODELS
+model Timesheet {
+  id          String          @id @default(cuid())
+  userId      String
+  weekStarting DateTime
+  weekEnding  DateTime
+  status      TimesheetStatus @default(DRAFT)
+  totalHours  Float          @default(0)
+  notes       String?
+  submittedAt DateTime?
+  approvedAt  DateTime?
+  approvedBy  String?
+  rejectedAt  DateTime?
+  rejectionReason String?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  user        User           @relation("TimesheetUser", fields: [userId], references: [id], onDelete: Cascade)
+  approver    User?          @relation("TimesheetApprover", fields: [approvedBy], references: [id])
+  timeEntries TimeEntry[]
+
+  @@unique([userId, weekStarting])
+  @@map("timesheets")
+}
+
+model TimeEntry {
+  id          String    @id @default(cuid())
+  timesheetId String
+  userId      String
+  projectId   String?
+  taskId      String?
+  date        DateTime
+  startTime   DateTime?
+  endTime     DateTime?
+  hours       Float
+  description String?
+  billable    Boolean   @default(true)
+  overtime    Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  timesheet   Timesheet @relation(fields: [timesheetId], references: [id], onDelete: Cascade)
+  user        User      @relation("TimeEntryUser", fields: [userId], references: [id], onDelete: Cascade)
+  project     Project?  @relation("ProjectTimeEntries", fields: [projectId], references: [id])
+  task        Task?     @relation("TaskTimeEntries", fields: [taskId], references: [id])
+
+  @@map("time_entries")
+}
+
+// ORGANIZATIONAL HIERARCHY MODELS
+model Department {
+  id           String  @id @default(cuid())
+  name         String
+  code         String  @unique
+  description  String?
+  managerId    String?
+  parentId     String?
+  budget       Float?
+  isActive     Boolean @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  manager      User?        @relation("DepartmentManager", fields: [managerId], references: [id])
+  parent       Department?  @relation("DepartmentHierarchy", fields: [parentId], references: [id])
+  children     Department[] @relation("DepartmentHierarchy")
+  members      User[]       @relation("DepartmentMembers")
+
+  @@map("departments")
+}
+
+// SKILLS MANAGEMENT MODELS
+model Skill {
+  id          String     @id @default(cuid())
+  name        String     @unique
+  description String?
+  category    String?
+  isActive    Boolean    @default(true)
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  userSkills  UserSkill[]
+  projectSkills ProjectSkill[]
+
+  @@map("skills")
+}
+
+model UserSkill {
+  id           String     @id @default(cuid())
+  userId       String
+  skillId      String
+  level        SkillLevel
+  yearsOfExp   Float?
+  certifiedAt  DateTime?
+  lastUsed     DateTime?
+  isCertified  Boolean    @default(false)
+  notes        String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  user         User       @relation("UserSkills", fields: [userId], references: [id], onDelete: Cascade)
+  skill        Skill      @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, skillId])
+  @@map("user_skills")
+}
+
+model ProjectSkill {
+  id           String     @id @default(cuid())
+  projectId    String
+  skillId      String
+  requiredLevel SkillLevel
+  priority     Priority   @default(MEDIUM)
+  notes        String?
+  createdAt    DateTime   @default(now())
+
+  project      Project    @relation("ProjectSkills", fields: [projectId], references: [id], onDelete: Cascade)
+  skill        Skill      @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, skillId])
+  @@map("project_skills")
 }
